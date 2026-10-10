@@ -1,42 +1,81 @@
+from pathlib import Path
+
 import pandas as pd
 import torch
-from PIL import Image
 from torch.utils.data import Dataset
-from torchvision import transforms
-from .preprocessing import preprocess_pil
 
-class EngineeringSymbolDataset(Dataset):
-    def __init__(self, manifest_path, split, image_size=128, class_to_idx=None, train=False):
-        df = pd.read_csv(manifest_path)
-        self.df = df[df["split"] == split].reset_index(drop=True)
+from src.preprocessing import preprocess_image
 
-        if class_to_idx is None:
-            classes = sorted(self.df["label"].unique())
-            self.class_to_idx = {c: i for i, c in enumerate(classes)}
+
+class EngineeringDrawingDataset(Dataset):
+    """
+    Dataset for the SiED engineering-symbol dataset.
+
+    Each sample contains:
+    - 10,000 grayscale pixel values
+    - 1 categorical label
+
+    The 10,000 pixels are reshaped into a 100x100 image.
+    """
+
+    def __init__(
+        self,
+        manifest_path,
+        csv_path,
+        split,
+        label_to_index=None,
+        augment=False,
+    ):
+        self.manifest_path = Path(manifest_path)
+        self.csv_path = Path(csv_path)
+        self.split = split
+        self.augment = augment
+
+        self.manifest = pd.read_csv(self.manifest_path)
+        self.manifest = self.manifest[
+            self.manifest["split"] == split
+        ].reset_index(drop=True)
+
+        # Load the original CSV without assuming a header.
+        self.data = pd.read_csv(
+            self.csv_path,
+            header=None,
+        )
+
+        if label_to_index is None:
+            labels = sorted(self.manifest["label"].unique())
+            self.label_to_index = {
+                label: idx
+                for idx, label in enumerate(labels)
+            }
         else:
-            self.class_to_idx = class_to_idx
-
-        ops = [
-            transforms.Lambda(lambda im: preprocess_pil(im, image_size)),
-            transforms.ToTensor(),
-            transforms.Normalize([0.5], [0.5]),
-        ]
-
-        if train:
-            ops.insert(1, transforms.RandomAffine(
-                degrees=10,
-                translate=(0.05, 0.05),
-                scale=(0.95, 1.05),
-            ))
-
-        self.transform = transforms.Compose(ops)
+            self.label_to_index = label_to_index
 
     def __len__(self):
-        return len(self.df)
+        return len(self.manifest)
 
-    def __getitem__(self, idx):
-        row = self.df.iloc[idx]
-        image = Image.open(row["path"])
-        image = self.transform(image)
-        label = self.class_to_idx[row["label"]]
-        return image, label
+    def __getitem__(self, index):
+        row = self.manifest.iloc[index]
+
+        sample_id = int(row["sample_id"])
+        label = row["label"]
+
+        # Extract the flattened 100x100 image.
+        pixels = self.data.iloc[
+            sample_id,
+            :10000,
+        ].to_numpy(dtype="float32")
+
+        image = pixels.reshape(100, 100)
+
+        image = preprocess_image(
+            image,
+            augment=self.augment,
+        )
+
+        target = self.label_to_index[label]
+
+        return (
+            torch.tensor(image, dtype=torch.float32),
+            torch.tensor(target, dtype=torch.long),
+        )

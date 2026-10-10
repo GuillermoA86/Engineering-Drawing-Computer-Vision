@@ -1,46 +1,52 @@
 import io
-import torch
+
 from fastapi import FastAPI, File, UploadFile
 from PIL import Image
-from torchvision import transforms
 
-from model import build_model
-from preprocessing import preprocess_pil
+try:
+    from src.predict import load_model, predict_image
+except ModuleNotFoundError:
+    from predict import load_model, predict_image
 
-app = FastAPI(title="Engineering Drawing Symbol Classifier")
 
-CHECKPOINT = "models/best_model.pt"
+app = FastAPI(
+    title="Engineering Drawing Symbol Classifier",
+    version="1.0.0",
+)
 
-def load_model():
-    ckpt = torch.load(CHECKPOINT, map_location="cpu")
-    class_to_idx = ckpt["class_to_idx"]
-    idx_to_class = {v: k for k, v in class_to_idx.items()}
-    model = build_model(len(class_to_idx), pretrained=False)
-    model.load_state_dict(ckpt["state_dict"])
-    model.eval()
-    return model, ckpt["image_size"], idx_to_class
+
+CHECKPOINT_PATH = "models/best_model.pt"
+
+
+model, image_size, idx_to_class = load_model(
+    CHECKPOINT_PATH
+)
+
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {
+        "status": "ok"
+    }
+
 
 @app.post("/predict")
-async def predict(file: UploadFile = File(...)):
-    model, size, idx_to_class = load_model()
-    image = Image.open(io.BytesIO(await file.read()))
-    image = preprocess_pil(image, size)
-    x = transforms.ToTensor()(image)
-    x = transforms.Normalize([0.5], [0.5])(x).unsqueeze(0)
+async def predict(
+    file: UploadFile = File(...)
+):
 
-    with torch.no_grad():
-        probs = torch.softmax(model(x), dim=1)[0]
+    image_bytes = await file.read()
 
-    values, indices = probs.topk(min(3, len(probs)))
-    return {
-        "predicted_class": idx_to_class[indices[0].item()],
-        "confidence": float(values[0]),
-        "top_k": [
-            {"class": idx_to_class[i.item()], "probability": float(v)}
-            for v, i in zip(values, indices)
-        ],
-    }
+    image = Image.open(
+        io.BytesIO(image_bytes)
+    )
+
+    result = predict_image(
+        image=image,
+        model=model,
+        image_size=image_size,
+        idx_to_class=idx_to_class,
+        top_k=3,
+    )
+
+    return result
